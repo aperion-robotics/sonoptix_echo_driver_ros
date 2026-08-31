@@ -45,6 +45,7 @@ class SonoptixEchoDriver:
         # NOTE: The following parameters are included in dynamic reconfigure
         self.sonar_frame = rospy.get_param("~sonar_frame", "sonar_link")
         self.sonar_range = rospy.get_param("~sonar_range", 9)
+        self.sonar_operating_mode = rospy.get_param("~sonar_operating_mode", 0) #0:auto,1:HF,2:LF,3:LFLR (low frequency,low range)
         self.sonar_min_range = rospy.get_param("~sonar_min_range", 0.2)
         self.image_data_factor = rospy.get_param("~image_data_factor", 1)
         self.default_distance_value = rospy.get_param("~default_distance_value", 999)
@@ -161,6 +162,8 @@ class SonoptixEchoDriver:
             self.mock_hardware = config.mock_hardware
             self.draw_distance_lines = config.draw_distance_lines
             self.minimum_obstacle_value = config.minimum_obstacle_value
+            if config.sonar_operating_mode != self.sonar_operating_mode:
+                self.set_sonar_operating_mode(config.sonar_operating_mode)
             if config.sonar_range != self.sonar_range:
                 self.set_sonar_range(config.sonar_range)
             if config.enabled != self.sonar_enabled:
@@ -283,6 +286,7 @@ class SonoptixEchoDriver:
                 json={
                     "enable": self.sonar_enabled,
                     "sonar_range": self.sonar_range,
+                    "operating_mode": self.sonar_operating_mode,
                 },
                 timeout=2,
             )
@@ -297,6 +301,16 @@ class SonoptixEchoDriver:
             if self.sonar_range <= 30
             else 90 * self.pi_deg_ratio
         )
+        if self.mock_hardware:
+            return
+        self.set_sonar_state(False)
+        if previous_sonar_state:
+            time.sleep(1)
+            self.set_sonar_state(True)
+
+    def set_sonar_operating_mode(self, mode):
+        previous_sonar_state = self.sonar_enabled
+        self.sonar_operating_mode = mode
         if self.mock_hardware:
             return
         self.set_sonar_state(False)
