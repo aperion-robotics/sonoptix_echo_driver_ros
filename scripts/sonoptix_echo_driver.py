@@ -1,104 +1,136 @@
 #!/usr/bin/python3
 import cv2
 import time
-import rospy
+import rclpy
 import requests
 import threading
 import numpy as np
 from cv_bridge import CvBridge
+from types import SimpleNamespace
+from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rcl_interfaces.msg import FloatingPointRange, IntegerRange, ParameterDescriptor
 from std_srvs.srv import SetBool
 from sensor_msgs.msg import LaserScan, Image
-from dynamic_reconfigure.server import Server
-from sonoptix_echo_driver_ros.cfg import SonoptixEchoConfig
+
+# NOTE: Replaces cfg/SonoptixEcho.cfg (dynamic reconfigure).
+# name, default, description, (min, max)
+RECONFIGURABLE_PARAMETERS = [
+    ("sonar_frame", "bluebot_sonar_base_link", "The frame the sensor is attached to", None),
+    ("sonar_range", 10.0, "The range of the sensor", (0.0, 200.0)),
+    ("sonar_operation_mode", 0, "The operating mode of the sensor (0:auto,1:HF,2:LF,3:LFLR)", (0, 3)),
+    ("default_distance_is_inf", True, "Use Inf laserscan range value when no obstacle is found", None),
+    ("default_distance_value", 999.0, "The laserscan range value when no obstacle is found", (0.0, 999.0)),
+    ("sonar_min_range", 0.5, "The minimum range to be considered as valid for the laserscan message", (0.0, 200.0)),
+    ("image_data_factor", 1.0, "A factor that is multiplied on the original sonar image data", (0.0, 200.0)),
+    ("publish_sonar_image", False, "When this flag is true, the original sensor image is published as a sensor_msgs/Image message", None),
+    ("publish_cone_image", False, "When this flag is true, the processed cone projection of the sonar data is published as a sensor_msgs/Image message", None),
+    ("publish_laserscan", True, "When this flag is true, the original sensor image is published as a sensor_msgs/Laserscan message", None),
+    ("flip_input_x_sonar_image", False, "When this flag is true, the sonar image produced by the sensor is flipped on the x axis before any computation", None),
+    ("flip_input_y_sonar_image", False, "When this flag is true, the sonar image produced by the sensor is flipped on the y axis before any computation", None),
+    ("flip_output_x_sonar_image", True, "When this flag is true, and the sonar image is published, the original sensor image is published as a sensor_msgs/Image message with a flipped x axis", None),
+    ("flip_output_y_sonar_image", True, "When this flag is true, and the sonar image is published, the original sensor image is published as a sensor_msgs/Image message with a flipped y axis", None),
+    ("flip_output_x_sonar_image_cone", True, "When this flag is true, the cone projection image is published as a sensor_msgs/Image message with a flipped x axis", None),
+    ("flip_output_y_sonar_image_cone", True, "When this flag is true, the cone projection image is published as a sensor_msgs/Image message with a flipped y axis", None),
+    ("minimum_obstacle_value", 1, "The minimum pixel value of the sensor image to be considered as an obstacle", (1, 255)),
+    ("mock_hardware", False, "When this flag is true, the driver does not connect to real hardware and publishes random data instead", None),
+    ("draw_distance_lines", True, "When this flag is true, the driver draws distance lines on the sonar image", None),
+    ("enabled", False, "When this flag is true, the driver starts the sensor", None),
+]
 
 
-class SonoptixEchoDriver:
-    def __del__(self):
-        self.image_pub_timer.shutdown()
-        self.frame_reader_timer.shutdown()
-        self.laserscan_pub_timer.shutdown()
-
-        if self.sonar_capture:
-            self.sonar_capture.release()
-
+class SonoptixEchoDriver(Node):
     def __init__(self):
-        rospy.init_node("sonoptix_echo_driver_node")
-        self.enable_sonar_service = rospy.get_param(
-            "~enable_sonar_service", "enable_sonar"
+        super().__init__("sonoptix_echo_driver_node")
+        self.enable_sonar_service = self.declare_parameter(
+            "enable_sonar_service", "enable_sonar"
+        ).value
+        self.srv = self.create_service(
+            SetBool,
+            self.enable_sonar_service,
+            self.enable_sonar_callback,
+            callback_group=MutuallyExclusiveCallbackGroup(),
         )
-        self.srv = rospy.Service(
-            self.enable_sonar_service, SetBool, self.enable_sonar_callback
-        )
-        self.ip = rospy.get_param("~ip", "192.168.2.42")
-        self.rtsp_port = rospy.get_param("~rtsp_port", 8554)
-        self.api_port = rospy.get_param("~api_port", 8000)
-        self.laserscan_topic = rospy.get_param("~laserscan_topic", "sonar_scan")
-        self.sonar_image_topic = rospy.get_param("~sonar_image_topic", "sonar_image")
-        self.pub_hz = rospy.get_param("~publish_hz", 25)
+        self.ip = self.declare_parameter("ip", "192.168.2.42").value
+        self.rtsp_port = self.declare_parameter("rtsp_port", 8554).value
+        self.api_port = self.declare_parameter("api_port", 8000).value
+        self.laserscan_topic = self.declare_parameter("laserscan_topic", "sonar_scan").value
+        self.sonar_image_topic = self.declare_parameter("sonar_image_topic", "sonar_image").value
+        self.pub_hz = self.declare_parameter("publish_hz", 25).value
+
         # NOTE: This debugging image topic is used to experiment with
         # laserscan generation using image messages from rosbags since the sensor
         # cannot be used
-        self.debugging_sonar_image_sub_topic = rospy.get_param(
-            "~debugging_sonar_image_sub_topic", ""
-        )
+        self.debugging_sonar_image_sub_topic = self.declare_parameter("debugging_sonar_image_sub_topic", "").value
 
         # NOTE: The following parameters are included in dynamic reconfigure
-        self.sonar_frame = rospy.get_param("~sonar_frame", "sonar_link")
-        self.sonar_range = rospy.get_param("~sonar_range", 9)
-        self.sonar_operation_mode = rospy.get_param("~sonar_operation_mode", 0) #0:auto,1:HF,2:LF,3:LFLR (low frequency,low range)
-        self.sonar_min_range = rospy.get_param("~sonar_min_range", 0.2)
-        self.image_data_factor = rospy.get_param("~image_data_factor", 1)
-        self.default_distance_value = rospy.get_param("~default_distance_value", 999)
-        self.default_distance_is_inf = rospy.get_param("~default_distance_is_inf", True)
+        for name, default, description, limits in RECONFIGURABLE_PARAMETERS:
+            descriptor = ParameterDescriptor(description=description)
+            if isinstance(default, float):
+                descriptor.floating_point_range = [
+                    FloatingPointRange(from_value=limits[0], to_value=limits[1])
+                ]
+            elif limits is not None:
+                descriptor.integer_range = [
+                    IntegerRange(from_value=limits[0], to_value=limits[1], step=1)
+                ]
+            self.declare_parameter(name, default, descriptor)
 
-        self.publish_sonar_image = rospy.get_param("~publish_sonar_image", True)
-        self.publish_cone_image = rospy.get_param("~publish_cone_image", True)
-        self.publish_laserscan = rospy.get_param("~publish_laserscan", True)
-        self.flip_input_x_sonar_image = rospy.get_param(
-            "~flip_input_x_sonar_image", True
-        )
-        self.flip_input_y_sonar_image = rospy.get_param(
-            "~flip_input_y_sonar_image", True
-        )
-        self.flip_output_x_sonar_image = rospy.get_param(
-            "~flip_output_x_sonar_image", True
-        )
-        self.flip_output_y_sonar_image = rospy.get_param(
-            "~flip_output_y_sonar_image", True
-        )
-        self.flip_output_x_sonar_image_cone = rospy.get_param(
-            "~flip_output_x_sonar_image_cone", True
-        )
-        self.flip_output_y_sonar_image_cone = rospy.get_param(
-            "~flip_output_y_sonar_image_cone", True
-        )
-        self.mock_hardware = rospy.get_param("~mock_hardware", True)
-        self.minimum_obstacle_value = rospy.get_param("~minimum_obstacle_value", 180)
-        self.sonar_enabled = rospy.get_param("~enabled", False)
+        self.sonar_frame = self.get_parameter("sonar_frame").value
+        self.sonar_range = self.get_parameter("sonar_range").value
+        self.sonar_operation_mode = self.get_parameter("sonar_operation_mode").value #0:auto,1:HF,2:LF,3:LFLR (low frequency,low range)
+        self.sonar_min_range = self.get_parameter("sonar_min_range").value
+        self.image_data_factor = self.get_parameter("image_data_factor").value
+        self.default_distance_value = self.get_parameter("default_distance_value").value
+        self.default_distance_is_inf = self.get_parameter("default_distance_is_inf").value
 
-        self.draw_distance_lines = rospy.get_param("~draw_distance_lines", True)
+        self.publish_sonar_image = self.get_parameter("publish_sonar_image").value
+        self.publish_cone_image = self.get_parameter("publish_cone_image").value
+        self.publish_laserscan = self.get_parameter("publish_laserscan").value
+        self.flip_input_x_sonar_image = self.get_parameter("flip_input_x_sonar_image").value
+        self.flip_input_y_sonar_image = self.get_parameter("flip_input_y_sonar_image").value
+        self.flip_output_x_sonar_image = self.get_parameter("flip_output_x_sonar_image").value
+        self.flip_output_y_sonar_image = self.get_parameter("flip_output_y_sonar_image").value
+        self.flip_output_x_sonar_image_cone = self.get_parameter(
+            "flip_output_x_sonar_image_cone"
+        ).value
+        self.flip_output_y_sonar_image_cone = self.get_parameter(
+            "flip_output_y_sonar_image_cone"
+        ).value
+        self.mock_hardware = self.get_parameter("mock_hardware").value
+        self.minimum_obstacle_value = self.get_parameter("minimum_obstacle_value").value
+        self.sonar_enabled = self.get_parameter("enabled").value
+
+        self.draw_distance_lines = self.get_parameter("draw_distance_lines").value
 
         # ------------------------------------------------------------------
-        self.laserscan_pub = rospy.Publisher(
-            self.laserscan_topic, LaserScan, queue_size=10
+        self.laserscan_pub = self.create_publisher(
+            LaserScan, self.laserscan_topic, 10
         )
-        self.image_pub = rospy.Publisher(self.sonar_image_topic, Image, queue_size=10)
-        self.cone_projection_pub = rospy.Publisher(
-            self.sonar_image_topic + "_cone_projection", Image, queue_size=10
+        self.image_pub = self.create_publisher(Image, self.sonar_image_topic, 10)
+        self.cone_projection_pub = self.create_publisher(
+            Image, self.sonar_image_topic + "_cone_projection", 10
         )
         self.rtsp_url = "rtsp://" + self.ip + ":" + str(self.rtsp_port) + "/raw"
         self.api_url = "http://" + self.ip + ":" + str(self.api_port) + "/api/v1"
 
-        self.image_pub_timer = rospy.Timer(
-            rospy.Duration(1.0 / self.pub_hz), self.sonar_read_laserscan_pub
+        self.laserscan_pub_timer = self.create_timer(
+            1.0 / self.pub_hz,
+            self.sonar_read_laserscan_pub,
+            callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
-        self.laserscan_pub_timer = rospy.Timer(
-            rospy.Duration(1.0 / self.pub_hz), self.sonar_read_image_pub
+        self.image_pub_timer = self.create_timer(
+            1.0 / self.pub_hz,
+            self.sonar_read_image_pub,
+            callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
-        self.frame_reader_timer = rospy.Timer(
-            rospy.Duration(0.5 / self.pub_hz), self.frame_reader_worker
+        self.frame_reader_timer = self.create_timer(
+            0.5 / self.pub_hz,
+            self.frame_reader_worker,
+            callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
         # This is used to keep track of new frames coming from the sonar
@@ -118,13 +150,18 @@ class SonoptixEchoDriver:
         self.sonar_fov_rad = 0.0
         self.set_sonar_range(self.sonar_range)
 
-        self.dyn_reconf_server = Server(SonoptixEchoConfig, self.dyn_reconf_callback)
+        # NOTE: Like the dynamic reconfigure server, the callback runs once at
+        # startup and then on every change, always with the full config
+        self.add_post_set_parameters_callback(self.parameters_callback)
+        self.dyn_reconf_callback(self.reconfigurable_config())
         self.debugging_image_sub = None
         if self.debugging_sonar_image_sub_topic:
-            self.debugging_image_sub = rospy.Subscriber(
-                self.debugging_sonar_image_sub_topic,
+            self.debugging_image_sub = self.create_subscription(
                 Image,
+                self.debugging_sonar_image_sub_topic,
                 self.debugging_image_callback,
+                10,
+                callback_group=MutuallyExclusiveCallbackGroup(),
             )
 
     def debugging_image_callback(self, image_msg):
@@ -139,11 +176,29 @@ class SonoptixEchoDriver:
         if flip_opt is not None:
             sonar_image = cv2.flip(sonar_image, flip_opt)
 
+        # NOTE: Every incoming image is new data, otherwise nothing is published
+        # while the sonar is disabled
+        with self.mutex:
+            self.new_data_for_laserscan_image_and_cone = [True, True, True]
+
         self.publish_sonar_image_to_laserscan(sonar_image)
         self.publish_sonar_image_to_image(sonar_image)
 
-    def dyn_reconf_callback(self, config, _):
-        rospy.logwarn(config)
+    def reconfigurable_config(self):
+        return SimpleNamespace(
+            **{
+                name: self.get_parameter(name).value
+                for name, _, _, _ in RECONFIGURABLE_PARAMETERS
+            }
+        )
+
+    def parameters_callback(self, parameters):
+        reconfigurable_names = [name for name, _, _, _ in RECONFIGURABLE_PARAMETERS]
+        if any(p.name in reconfigurable_names for p in parameters):
+            self.dyn_reconf_callback(self.reconfigurable_config())
+
+    def dyn_reconf_callback(self, config):
+        self.get_logger().warn(str(config))
         with self.mutex:
             self.sonar_frame = config.sonar_frame
             self.image_data_factor = config.image_data_factor
@@ -168,21 +223,22 @@ class SonoptixEchoDriver:
                 self.set_sonar_range(config.sonar_range)
             if config.enabled != self.sonar_enabled:
                 self.set_sonar_state(config.enabled)
-        return config
 
-    def enable_sonar_callback(self, srv):
+    def enable_sonar_callback(self, request, response):
         with self.mutex:
-            self.set_sonar_state(srv.data)
-        return True, ""
+            self.set_sonar_state(request.data)
+        response.success = True
+        response.message = ""
+        return response
 
-    def frame_reader_worker(self, _):
+    def frame_reader_worker(self):
         """Continuously read frames from sonar capture and keep the latest one."""
 
         with self.mutex:
             if not self.sonar_enabled:
                 if self.latest_sonar_image is not None:
                     self.latest_sonar_image = None
-                rospy.logerr_throttle(10, "Sonar is not enabled")
+                self.get_logger().error("Sonar is not enabled", throttle_duration_sec=10)
                 return
             if self.mock_hardware:
                 self.new_data_for_laserscan_image_and_cone = [True, True, True]
@@ -201,11 +257,11 @@ class SonoptixEchoDriver:
             if not success:
                 self.sonar_capture.release()
                 self.sonar_capture = None
-                rospy.logerr(
+                self.get_logger().error(
                     "Frame reader thread: Error reading from sonar image stream"
                 )
 
-    def sonar_read_image_pub(self, _):
+    def sonar_read_image_pub(self):
         with self.mutex:
 
             if not self.sonar_enabled:
@@ -240,7 +296,7 @@ class SonoptixEchoDriver:
 
         self.publish_sonar_image_to_image(sonar_image)
 
-    def sonar_read_laserscan_pub(self, _):
+    def sonar_read_laserscan_pub(self):
         with self.mutex:
 
             if not self.sonar_enabled:
@@ -291,7 +347,7 @@ class SonoptixEchoDriver:
                 timeout=2,
             )
         except Exception as e:
-            rospy.logerr("Failed while enabling sonar:" + str(e))
+            self.get_logger().error("Failed while enabling sonar:" + str(e))
 
     def set_sonar_range(self, r):
         previous_sonar_state = self.sonar_enabled
@@ -330,7 +386,7 @@ class SonoptixEchoDriver:
                 timeout=2,
             )
         except Exception as e:
-            rospy.logerr("Failed while setting sonar datastream to rtsp:" + str(e))
+            self.get_logger().error("Failed while setting sonar datastream to rtsp:" + str(e))
 
     def setup_sonar_capture(self):
 
@@ -344,7 +400,7 @@ class SonoptixEchoDriver:
         try:
             self.sonar_capture = cv2.VideoCapture(self.rtsp_url)
         except Exception as e:
-            rospy.logerr("Failed to create sonar image capture:" + str(e))
+            self.get_logger().error("Failed to create sonar image capture:" + str(e))
 
     def sonar_image_to_ranges(self, sonar_image):
         ranges = []
@@ -541,7 +597,7 @@ class SonoptixEchoDriver:
         self.new_data_for_laserscan_image_and_cone[0] = False
         laserscan_msg = LaserScan()
         laserscan_msg.header.frame_id = self.sonar_frame
-        laserscan_msg.header.stamp = rospy.Time.now()
+        laserscan_msg.header.stamp = self.get_clock().now().to_msg()
         laserscan_msg.angle_min = -self.sonar_fov_rad / 2.0
         laserscan_msg.angle_max = self.sonar_fov_rad / 2.0
         laserscan_msg.angle_increment = self.sonar_fov_rad / 256
@@ -562,6 +618,7 @@ class SonoptixEchoDriver:
 
         if self.publish_sonar_image and self.new_data_for_laserscan_image_and_cone[1]:
             flip_opt = None
+            sonar_image_flipped = sonar_image
             if self.flip_output_x_sonar_image and self.flip_output_y_sonar_image:
                 flip_opt = -1
             elif self.flip_output_y_sonar_image:
@@ -574,7 +631,7 @@ class SonoptixEchoDriver:
             image_msg = self.cv_bridge.cv2_to_imgmsg(
                 sonar_image_flipped, encoding="bgr8"
             )
-            image_msg.header.stamp = rospy.Time.now()
+            image_msg.header.stamp = self.get_clock().now().to_msg()
             image_msg.header.frame_id = self.sonar_frame
             self.image_pub.publish(image_msg)
             self.new_data_for_laserscan_image_and_cone[1] = False
@@ -598,12 +655,24 @@ class SonoptixEchoDriver:
             # Publish cone projection
             cone_projection = self.sonar_image_to_cone_projection(sonar_image_flipped)
             cone_msg = self.cv_bridge.cv2_to_imgmsg(cone_projection, encoding="bgr8")
-            cone_msg.header.stamp = rospy.Time.now()
+            cone_msg.header.stamp = self.get_clock().now().to_msg()
             cone_msg.header.frame_id = self.sonar_frame
             self.cone_projection_pub.publish(cone_msg)
             self.new_data_for_laserscan_image_and_cone[2] = False
 
 
+def main():
+    try:
+        rclpy.init()
+        # NOTE: rospy ran every timer/service/subscriber in its own thread.
+        # Each callback gets its own MutuallyExclusiveCallbackGroup to match it,
+        # so enough threads are needed for all of them to run at once
+        executor = MultiThreadedExecutor(num_threads=8)
+        executor.add_node(SonoptixEchoDriver())
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+
+
 if __name__ == "__main__":
-    sonar = SonoptixEchoDriver()
-    rospy.spin()
+    main()

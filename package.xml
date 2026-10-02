@@ -10,10 +10,18 @@
 
   <url type="website">https://github.com/ikh-innovation/sonoptix_echo_driver_ros</url>
 
-  <buildtool_depend>catkin</buildtool_depend>
-  <depend>rospy</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclpy</depend>
   <depend>std_srvs</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>
-  <depend>dynamic_reconfigure</depend>
+  <depend>rcl_interfaces</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-requests</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>
