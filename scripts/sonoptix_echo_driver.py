@@ -198,7 +198,7 @@ class SonoptixEchoDriver(Node):
             self.dyn_reconf_callback(self.reconfigurable_config())
 
     def dyn_reconf_callback(self, config):
-        self.get_logger().warn(str(config))
+        self.get_logger().warning(str(config))
         with self.mutex:
             self.sonar_frame = config.sonar_frame
             self.image_data_factor = config.image_data_factor
@@ -398,7 +398,11 @@ class SonoptixEchoDriver(Node):
         self.set_sonar_range(self.sonar_range)
 
         try:
-            self.sonar_capture = cv2.VideoCapture(self.rtsp_url)
+            # NOTE: FFmpeg frame-threaded decoding buffers ~1 frame per thread
+            # (one per core by default), which adds ~0.5s latency on a 16 core host
+            self.sonar_capture = cv2.VideoCapture(
+                self.rtsp_url, cv2.CAP_FFMPEG, [cv2.CAP_PROP_N_THREADS, 1]
+            )
         except Exception as e:
             self.get_logger().error("Failed to create sonar image capture:" + str(e))
 
