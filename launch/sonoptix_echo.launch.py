@@ -5,7 +5,7 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
 )
-from launch_ros.actions import Node
+from launch_ros.actions import Node, SetParameter
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -18,6 +18,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("use_sim_time", default_value="false"),
+            SetParameter(name="use_sim_time", value=LaunchConfiguration("use_sim_time")),
             DeclareLaunchArgument(
                 "namespace",
                 default_value=EnvironmentVariable("ROBOT_NAME", default_value="bluebot"),
