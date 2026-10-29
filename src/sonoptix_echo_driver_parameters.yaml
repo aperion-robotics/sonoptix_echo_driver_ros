@@ -1,0 +1,164 @@
+# Node parameters, used by generate_parameter_library to generate the
+# declaration, validation and update code (sonoptix_echo_driver_parameters.hpp).
+# read_only parameters can only be set at startup (launch file / params file);
+# all the others can be changed at runtime and trigger the reconfigure callback.
+sonoptix_echo_driver:
+  ip:
+    type: string
+    read_only: true
+    default_value: "192.168.2.42"
+    description: "IP of the sonar"
+  rtsp_port:
+    type: int
+    read_only: true
+    default_value: 8554
+    description: "RTSP port of the sonar"
+  api_port:
+    type: int
+    read_only: true
+    default_value: 8000
+    description: "HTTP API port of the sonar"
+  laserscan_topic:
+    type: string
+    read_only: true
+    default_value: "sonar_scan"
+    description: "Laserscan output topic"
+  sonar_image_topic:
+    type: string
+    read_only: true
+    default_value: "sonar_image"
+    description: "Sonar image output topic (the cone projection is published on <topic>_cone_projection)"
+  http_request_timeout:
+    type: double
+    read_only: true
+    default_value: 2.0
+    description: "Timeout in seconds of the sonar HTTP API requests (connect, send and receive)"
+    validation:
+      gt<>: [0.0]
+  rtsp_open_timeout:
+    type: double
+    read_only: true
+    default_value: 5.0
+    description: "Timeout in seconds for opening the sonar RTSP stream"
+    validation:
+      gt<>: [0.0]
+  rtsp_read_timeout:
+    type: double
+    read_only: true
+    default_value: 5.0
+    description: "Timeout in seconds for receiving a frame from the sonar RTSP stream, after which the stream is reconnected"
+    validation:
+      gt<>: [0.0]
+  rtsp_capture_options:
+    type: string
+    read_only: true
+    default_value: "rtsp_transport;tcp|fflags;nobuffer"
+    description: "FFmpeg options of the RTSP stream, as 'key;value|key;value' (OPENCV_FFMPEG_CAPTURE_OPTIONS). Empty keeps OpenCV's defaults"
+  publish_hz:
+    type: int
+    read_only: true
+    default_value: 25
+    description: "Maximum publishing rate of the laserscan and images (and frame rate of mock_hardware)"
+    validation:
+      gt<>: [0]
+  # NOTE: This debugging image topic is used to experiment with laserscan
+  # generation using image messages from rosbags since the sensor cannot be used
+  debugging_sonar_image_sub_topic:
+    type: string
+    read_only: true
+    default_value: ""
+    description: "When set, sonar images are read from this topic instead of the sensor"
+
+  # NOTE: Reconfigurable parameters, replacing cfg/SonoptixEcho.cfg (dynamic reconfigure)
+  sonar_frame:
+    type: string
+    default_value: "bluebot_sonar_base_link"
+    description: "The frame the sensor is attached to"
+  sonar_range:
+    type: double
+    default_value: 10.0
+    description: "The range of the sensor"
+    validation:
+      bounds<>: [0.0, 200.0]
+  sonar_operation_mode:
+    type: int
+    default_value: 0
+    description: "The operating mode of the sensor (0:auto,1:HF,2:LF,3:LFLR)"
+    validation:
+      bounds<>: [0, 3]
+  default_distance_is_inf:
+    type: bool
+    default_value: true
+    description: "Use Inf laserscan range value when no obstacle is found"
+  default_distance_value:
+    type: double
+    default_value: 999.0
+    description: "The laserscan range value when no obstacle is found"
+    validation:
+      bounds<>: [0.0, 999.0]
+  sonar_min_range:
+    type: double
+    default_value: 0.5
+    description: "The minimum range to be considered as valid for the laserscan message"
+    validation:
+      bounds<>: [0.0, 200.0]
+  image_data_factor:
+    type: double
+    default_value: 1.0
+    description: "A factor that is multiplied on the original sonar image data"
+    validation:
+      bounds<>: [0.0, 200.0]
+  publish_sonar_image:
+    type: bool
+    default_value: false
+    description: "When this flag is true, the original sensor image is published as a sensor_msgs/Image message"
+  publish_cone_image:
+    type: bool
+    default_value: false
+    description: "When this flag is true, the processed cone projection of the sonar data is published as a sensor_msgs/Image message"
+  publish_laserscan:
+    type: bool
+    default_value: true
+    description: "When this flag is true, the original sensor image is published as a sensor_msgs/Laserscan message"
+  flip_input_x_sonar_image:
+    type: bool
+    default_value: false
+    description: "When this flag is true, the sonar image produced by the sensor is flipped on the x axis before any computation"
+  flip_input_y_sonar_image:
+    type: bool
+    default_value: false
+    description: "When this flag is true, the sonar image produced by the sensor is flipped on the y axis before any computation"
+  flip_output_x_sonar_image:
+    type: bool
+    default_value: true
+    description: "When this flag is true, and the sonar image is published, the original sensor image is published as a sensor_msgs/Image message with a flipped x axis"
+  flip_output_y_sonar_image:
+    type: bool
+    default_value: true
+    description: "When this flag is true, and the sonar image is published, the original sensor image is published as a sensor_msgs/Image message with a flipped y axis"
+  flip_output_x_sonar_image_cone:
+    type: bool
+    default_value: true
+    description: "When this flag is true, the cone projection image is published as a sensor_msgs/Image message with a flipped x axis"
+  flip_output_y_sonar_image_cone:
+    type: bool
+    default_value: true
+    description: "When this flag is true, the cone projection image is published as a sensor_msgs/Image message with a flipped y axis"
+  minimum_obstacle_value:
+    type: int
+    default_value: 1
+    description: "The minimum pixel value of the sensor image to be considered as an obstacle"
+    validation:
+      bounds<>: [1, 255]
+  mock_hardware:
+    type: bool
+    default_value: false
+    description: "When this flag is true, the driver does not connect to real hardware and publishes random data instead"
+  draw_distance_lines:
+    type: bool
+    default_value: true
+    description: "When this flag is true, the cone projection shows range rings (with labels) at a round step, the wedge edges and bearing lines every 30 degrees"
+  enabled:
+    type: bool
+    default_value: false
+    description: "When this flag is true, the driver starts the sensor"

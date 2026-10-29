@@ -1,10 +1,71 @@
+# Sonoptix ECHO driver configuration
+# Initial values of all the sonoptix_echo_driver_node parameters.
+# Types, descriptions and valid ranges: src/sonoptix_echo_driver_parameters.yaml
+# (or `ros2 param describe /<namespace>/sonoptix_echo_driver_node <parameter>`).
 /**:
   ros__parameters:
-    enable_sonar_server: "enable_sonar"
+    # Static parameters (read-only): only read at startup
+    # sonar IP address
     ip: "192.168.1.42"
+    # sonar RTSP stream port
     rtsp_port: 8554
+    # sonar HTTP API port
     api_port: 8000
+    # sensor_msgs/LaserScan output topic
     laserscan_topic: "sonar_scan"
+    # sensor_msgs/Image output topic (cone projection on <topic>_cone_projection)
     sonar_image_topic: "sonar_image"
+    # s, sonar HTTP API request timeout (> 0.0)
+    http_request_timeout: 2.0
+    # s, timeout for opening the RTSP stream (> 0.0)
+    rtsp_open_timeout: 5.0
+    # s, timeout for receiving a frame before reconnecting (> 0.0)
+    rtsp_read_timeout: 5.0
+    # FFmpeg options "key;value|key;value", empty keeps OpenCV defaults
+    rtsp_capture_options: "rtsp_transport;tcp|fflags;nobuffer"
+    # Hz, maximum publishing rate (and mock_hardware frame rate) (> 0)
     publish_hz: 25
+    # if set, sonar images are also read from this topic (e.g. a rosbag)
     debugging_sonar_image_sub_topic: ""
+
+    # Dynamic parameters: can also be changed at runtime with `ros2 param set`
+    # frame_id of the published messages
+    sonar_frame: "bluebot_sonar_base_link"
+    # m, sensor range (FOV is 120 deg up to 30 m, 90 deg above) (range [0.0, 200.0])
+    sonar_range: 10.0
+    # 0: auto, 1: HF, 2: LF, 3: LFLR (range [0, 3])
+    sonar_operation_mode: 0
+    # laserscan range is inf when no obstacle is found in a beam
+    default_distance_is_inf: true
+    # m, laserscan range when no obstacle is found (if not inf) (range [0.0, 999.0])
+    default_distance_value: 999.0
+    # m, minimum valid laserscan range (range [0.0, 200.0])
+    sonar_min_range: 0.5
+    # factor multiplied on the sonar image data (published images only) (range [0.0, 200.0])
+    image_data_factor: 1.0
+    # publish the original sonar image
+    publish_sonar_image: false
+    # publish the cone projection image
+    publish_cone_image: false
+    # publish the laserscan
+    publish_laserscan: true
+    # flip the sonar image on x before any computation
+    flip_input_x_sonar_image: false
+    # flip the sonar image on y before any computation
+    flip_input_y_sonar_image: false
+    # flip the published sonar image on x
+    flip_output_x_sonar_image: true
+    # flip the published sonar image on y
+    flip_output_y_sonar_image: true
+    # flip the published cone projection on x
+    flip_output_x_sonar_image_cone: false
+    # flip the published cone projection on y
+    flip_output_y_sonar_image_cone: false
+    # minimum pixel value considered an obstacle (range [1, 255])
+    minimum_obstacle_value: 1
+    # publish random data instead of connecting to the sonar
+    mock_hardware: false
+    # cone projection: range rings with labels, wedge edges, bearing lines
+    draw_distance_lines: true
+    # enable the sonar when the node is activated
+    enabled: false
